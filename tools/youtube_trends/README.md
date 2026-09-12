@@ -1,6 +1,6 @@
 # YouTube trend kuzatuvchi
 
-YouTube Data API v3 orqali tanlangan mamlakatlarda (standart: O'zbekiston, Rossiya, AQSh)
+YouTube Data API v3 orqali tanlangan mamlakatlarda (standart: AQSh, Buyuk Britaniya, Rossiya)
 hozir eng ko'p ko'rilayotgan videolarni har kuni yig'ib, kategoriya va kanal bo'yicha
 hisobot beradi. Tashqi kutubxona kerak emas, Python 3.9+ yetarli.
 
@@ -25,7 +25,7 @@ taxminan 15 birlik sarflaydi.
 python3 tools/youtube_trends/yt_trends.py fetch
 
 # Boshqa mamlakatlar, kamroq video
-python3 tools/youtube_trends/yt_trends.py fetch --regions UZ,KZ,TR --max 100
+python3 tools/youtube_trends/yt_trends.py fetch --regions US,CA,AU --max 100
 
 # Yig'ilgan kunlar bo'yicha hisobot (so'nggi 14 kun)
 python3 tools/youtube_trends/yt_trends.py report --days 14

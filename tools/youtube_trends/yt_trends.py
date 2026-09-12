@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """YouTube trend snapshot va hisobot vositasi (faqat standart kutubxona).
 
-Google YouTube Data API v3 orqali tanlangan mamlakatlar bo'yicha "mostPopular"
+Google YouTube Data API v3 orqali tanlangan mamlakatlar (standart: AQSh, Buyuk Britaniya, Rossiya) bo'yicha "mostPopular"
 ro'yxatini oladi, har video uchun soatiga ko'rish tezligini (VPH) hisoblaydi,
 CSV ga yozadi va kategoriya bo'yicha qisqa hisobot chiqaradi.
 
 Buyruqlar:
-    python yt_trends.py fetch  [--regions UZ,RU,US] [--max 200] [--out data/]
+    python yt_trends.py fetch  [--regions US,GB,RU] [--max 200] [--out data/]
     python yt_trends.py report [--data data/] [--days 14]
 
 Kvota: har mamlakat uchun taxminan 5 birlik (kunlik bepul limit 10 000).
@@ -30,7 +30,7 @@ from collections import defaultdict
 from pathlib import Path
 
 API_BASE = "https://www.googleapis.com/youtube/v3/"
-DEFAULT_REGIONS = "UZ,RU,US"
+DEFAULT_REGIONS = "US,GB,RU"
 SHORT_MAX_SECONDS = 180  # <= 3 daqiqa Shorts deb hisoblanadi
 
 CSV_FIELDS = [
