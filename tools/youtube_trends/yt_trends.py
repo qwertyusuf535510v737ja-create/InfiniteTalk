@@ -7,9 +7,11 @@ CSV ga yozadi va kategoriya bo'yicha qisqa hisobot chiqaradi.
 
 Buyruqlar:
     python yt_trends.py fetch  [--regions US,GB,RU] [--max 200] [--out data/]
+    python yt_trends.py search "interesting facts" [--days 7] [--category 27] [--region US] [--lang en]
     python yt_trends.py report [--data data/] [--days 14]
 
-Kvota: har mamlakat uchun taxminan 5 birlik (kunlik bepul limit 10 000).
+Kvota: `fetch` har mamlakat uchun ~5 birlik, `search` har so'rov uchun ~102 birlik
+(kunlik bepul limit 10 000, ya'ni kuniga ~90 ta qidiruv).
 
 Muhit o'zgaruvchisi: YOUTUBE_API_KEY (yoki --api-key).
 """
@@ -52,8 +54,22 @@ CSV_FIELDS = [
     "comment_count",
     "views_per_hour",
     "engagement_rate",
+    "is_live",
+    "query",
     "url",
 ]
+
+# YouTube kategoriya IDlari (videoCategories.list dan)
+CATEGORY_IDS = {
+    "education": "27",
+    "science": "28",
+    "howto": "26",
+    "entertainment": "24",
+    "people": "22",
+    "news": "25",
+    "comedy": "23",
+    "gaming": "20",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -104,6 +120,41 @@ def fetch_most_popular(region: str, max_results: int, api_key: str) -> list[dict
     return items[:max_results]
 
 
+def search_video_ids(query: str, days: int, region: str, lang: str, category: str | None,
+                     duration: str, order: str, api_key: str) -> list[str]:
+    """search.list: kalit so'z bo'yicha so'nggi N kundagi videolar (100 birlik)."""
+    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    params = {
+        "part": "id",
+        "q": query,
+        "type": "video",
+        "order": order,
+        "publishedAfter": since,
+        "regionCode": region,
+        "relevanceLanguage": lang,
+        "videoDuration": duration,
+        "maxResults": 50,
+    }
+    if category:
+        params["videoCategoryId"] = category
+    data = api_get("search", params, api_key)
+    return [item["id"]["videoId"] for item in data.get("items", []) if item.get("id", {}).get("videoId")]
+
+
+def fetch_videos_by_ids(video_ids: list[str], api_key: str) -> list[dict]:
+    """videos.list: 50 tagacha ID uchun statistika (1 birlik)."""
+    items: list[dict] = []
+    for start in range(0, len(video_ids), 50):
+        chunk = video_ids[start:start + 50]
+        data = api_get(
+            "videos",
+            {"part": "snippet,statistics,contentDetails", "id": ",".join(chunk), "maxResults": 50},
+            api_key,
+        )
+        items.extend(data.get("items", []))
+    return items
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -137,7 +188,8 @@ def to_int(value) -> int:
         return 0
 
 
-def build_rows(region: str, items: list[dict], categories: dict[str, str], now: dt.datetime) -> list[dict]:
+def build_rows(region: str, items: list[dict], categories: dict[str, str], now: dt.datetime,
+               query: str = "") -> list[dict]:
     rows = []
     for rank, item in enumerate(items, start=1):
         snippet = item.get("snippet", {})
@@ -171,31 +223,49 @@ def build_rows(region: str, items: list[dict], categories: dict[str, str], now: 
                 "comment_count": comments,
                 "views_per_hour": round(views / hours, 1),
                 "engagement_rate": round((likes + comments) / views, 4) if views else 0.0,
+                "is_live": "yes" if snippet.get("liveBroadcastContent", "none") != "none" else "no",
+                "query": query,
                 "url": f"https://www.youtube.com/watch?v={item.get('id', '')}",
             }
         )
     return rows
 
 
-def write_csv(path: Path, rows: list[dict]) -> None:
+def write_csv(path: Path, rows: list[dict]) -> Path:
+    """CSV ga qo'shib yozadi. Eski fayl sarlavhasi mos kelmasa, yonida yangi fayl ochadi."""
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists()
+    if exists:
+        with path.open(newline="", encoding="utf-8") as fh:
+            header = next(csv.reader(fh), [])
+        if header != CSV_FIELDS:
+            path = path.with_name(path.stem + "_v2" + path.suffix)
+            exists = path.exists()
     with path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
         if not exists:
             writer.writeheader()
         writer.writerows(rows)
+    return path
 
 
-def read_snapshots(data_dir: Path, days: int) -> list[dict]:
+def read_snapshots(data_dir: Path, days: int, pattern: str = "trends_*.csv") -> list[dict]:
     cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%d")
     rows: list[dict] = []
-    for path in sorted(data_dir.glob("trends_*.csv")):
+    for path in sorted(data_dir.glob(pattern)):
         with path.open(newline="", encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
+                row.setdefault("is_live", "no")
+                row.setdefault("query", "")
                 if row["snapshot_date"] >= cutoff:
                     rows.append(row)
     return rows
+
+
+def split_live(rows: list[dict]) -> tuple[list[dict], int]:
+    """Jonli efirlarni ajratadi: ular VPH ni sun'iy oshiradi."""
+    normal = [r for r in rows if r.get("is_live", "no") != "yes"]
+    return normal, len(rows) - len(normal)
 
 
 def fmt_num(value: float) -> str:
@@ -215,8 +285,9 @@ def print_snapshot_summary(rows: list[dict]) -> None:
     for row in rows:
         by_region[row["region"]].append(row)
 
-    for region, region_rows in by_region.items():
-        print(f"\n=== {region}: {len(region_rows)} ta trend video ===")
+    for region, all_region_rows in by_region.items():
+        region_rows, live_count = split_live(all_region_rows)
+        print(f"\n=== {region}: {len(region_rows)} ta trend video (jonli efir chiqarib tashlandi: {live_count}) ===")
 
         category_vph: dict[str, float] = defaultdict(float)
         category_count: dict[str, int] = defaultdict(int)
@@ -252,8 +323,8 @@ def print_history_report(rows: list[dict], days: int) -> None:
     print(f"Davr: {dates[0]} .. {dates[-1]} ({len(dates)} kun), mamlakatlar: {', '.join(regions)}")
 
     for region in regions:
-        region_rows = [r for r in rows if r["region"] == region]
-        print(f"\n=== {region} ===")
+        region_rows, live_count = split_live([r for r in rows if r["region"] == region])
+        print(f"\n=== {region} (jonli efirlarsiz, {live_count} ta chiqarildi) ===")
 
         # Kategoriya ulushi (trend ro'yxatida necha marta paydo bo'ldi)
         category_days: dict[str, set] = defaultdict(set)
@@ -297,9 +368,69 @@ def print_history_report(rows: list[dict], days: int) -> None:
             )
 
 
+def print_search_summary(rows: list[dict], query: str) -> None:
+    rows, live_count = split_live(rows)
+    if not rows:
+        print("Hech narsa topilmadi.")
+        return
+    print(f"\n=== \"{query}\": {len(rows)} ta video (jonli efir: {live_count} chiqarildi) ===")
+
+    channel_hits: dict[str, int] = defaultdict(int)
+    channel_views: dict[str, int] = defaultdict(int)
+    channel_name: dict[str, str] = {}
+    for r in rows:
+        channel_hits[r["channel_id"]] += 1
+        channel_views[r["channel_id"]] += int(r["view_count"])
+        channel_name[r["channel_id"]] = r["channel_title"]
+
+    print("Eng ko'p ko'rish yig'gan kanallar (shu so'rov bo'yicha):")
+    for cid, views in sorted(channel_views.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+        print(f"  {channel_name[cid][:32]:<32} {fmt_num(views):>8} ko'rish  {channel_hits[cid]:>2} video")
+
+    formats = defaultdict(int)
+    for r in rows:
+        formats[r["format"]] += 1
+    print(f"Format: long={formats.get('long', 0)}  short={formats.get('short', 0)}")
+
+    print("Eng ko'p ko'rilgan 15 video:")
+    for r in sorted(rows, key=lambda r: int(r["view_count"]), reverse=True)[:15]:
+        print(
+            f"  {fmt_num(r['view_count']):>7} ko'rish  {fmt_num(r['views_per_hour']):>6} VPH  "
+            f"eng={float(r['engagement_rate']) * 100:4.1f}%  [{r['format']}] "
+            f"{r['channel_title'][:20]:<20} | {r['title'][:55]}"
+        )
+        print(f"           {r['url']}")
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
+def cmd_search(args: argparse.Namespace) -> int:
+    api_key = args.api_key or os.environ.get("YOUTUBE_API_KEY")
+    if not api_key:
+        print("YOUTUBE_API_KEY muhit o'zgaruvchisi yoki --api-key kerak.", file=sys.stderr)
+        return 2
+
+    category = args.category
+    if category and not category.isdigit():
+        category = CATEGORY_IDS.get(category.lower())
+        if category is None:
+            print(f"Noma'lum kategoriya. Mavjud: {', '.join(CATEGORY_IDS)} yoki raqamli ID.", file=sys.stderr)
+            return 2
+
+    now = dt.datetime.now(dt.timezone.utc)
+    categories = fetch_categories(args.region, api_key)
+    ids = search_video_ids(args.query, args.days, args.region, args.lang, category,
+                           args.duration, args.order, api_key)
+    items = fetch_videos_by_ids(ids, api_key)
+    rows = build_rows(args.region, items, categories, now, query=args.query)
+
+    csv_path = write_csv(Path(args.out) / f"search_{now.strftime('%Y-%m-%d')}.csv", rows)
+    print(f"Yozildi: {csv_path} ({len(rows)} qator)", file=sys.stderr)
+    print_search_summary(rows, args.query)
+    return 0
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     api_key = args.api_key or os.environ.get("YOUTUBE_API_KEY")
     if not api_key:
@@ -318,8 +449,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         all_rows.extend(rows)
         print(f"{region}: {len(rows)} ta video olindi", file=sys.stderr)
 
-    csv_path = out_dir / f"trends_{now.strftime('%Y-%m-%d')}.csv"
-    write_csv(csv_path, all_rows)
+    csv_path = write_csv(out_dir / f"trends_{now.strftime('%Y-%m-%d')}.csv", all_rows)
     print(f"Yozildi: {csv_path} ({len(all_rows)} qator)", file=sys.stderr)
 
     if not args.quiet:
@@ -344,6 +474,21 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--api-key", default=None, help="YOUTUBE_API_KEY o'rniga")
     fetch.add_argument("--quiet", action="store_true", help="Ekranga hisobot chiqarmaslik")
     fetch.set_defaults(func=cmd_fetch)
+
+    search = sub.add_parser("search", help="Kalit so'z bo'yicha so'nggi kunlardagi eng ko'p ko'rilgan videolar")
+    search.add_argument("query", help="Qidiruv so'zi, masalan: \"interesting facts\"")
+    search.add_argument("--days", type=int, default=7, help="Necha kun ichida chop etilgan (standart: 7)")
+    search.add_argument("--region", default="US", help="ISO mamlakat kodi (standart: US)")
+    search.add_argument("--lang", default="en", help="Til kodi: en, ru ... (standart: en)")
+    search.add_argument("--category", default=None,
+                        help="Kategoriya: " + ", ".join(CATEGORY_IDS) + " yoki raqamli ID. Bo'sh = hammasi")
+    search.add_argument("--duration", default="any", choices=["any", "short", "medium", "long"],
+                        help="short <4 daq, medium 4-20 daq, long >20 daq")
+    search.add_argument("--order", default="viewCount", choices=["viewCount", "relevance", "date", "rating"],
+                        help="Tartib (standart: viewCount)")
+    search.add_argument("--out", default=str(Path(__file__).parent / "data"), help="CSV papkasi")
+    search.add_argument("--api-key", default=None, help="YOUTUBE_API_KEY o'rniga")
+    search.set_defaults(func=cmd_search)
 
     report = sub.add_parser("report", help="Yig'ilgan snapshotlar bo'yicha hisobot")
     report.add_argument("--data", default=str(Path(__file__).parent / "data"), help="CSV papkasi")
