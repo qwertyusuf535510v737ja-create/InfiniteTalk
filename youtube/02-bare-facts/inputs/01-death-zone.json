@@ -1,0 +1,7 @@
+{
+    "prompt": "A calm male science presenter speaks directly to camera in a dark, minimal studio. He wears a plain dark shirt. The background is near black with a single soft key light from the left, creating a clean documentary look. His delivery is measured and serious, with small natural head movements and steady eye contact. Medium close-up shot, shallow depth of field, no camera movement.",
+    "cond_video": "youtube/02-bare-facts/assets/presenter.png",
+    "cond_audio": {
+        "person1": "youtube/02-bare-facts/audio/01-death-zone-part01.wav"
+    }
+}
